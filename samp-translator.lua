@@ -58,6 +58,14 @@ inifile = inicfg.load(defaultIni, cpath)
 inifile.translate.enable_in = false
 inifile.translate.enable_out = false
 inicfg.save(inifile, cpath)
+
+-- Helper to track external config modifications
+local function get_file_mod_time(path)
+    local attrs = lfs.attributes(path)
+    return attrs and attrs.modification or 0
+end
+local last_config_mod_time = get_file_mod_time(cpath)
+
 -- imgui variables
 local imguiFrame = {}
 local renderMainWindow = new.bool()
@@ -85,13 +93,18 @@ for file in lfs.dir(main_dir.."languages") do
 end
 local combo_scriptlangs = new['const char*'][#combo_scriptlangs_text](combo_scriptlangs_text)
 local combo_langs_tindex, combo_langs_sindex = new.int(0), new.int(0)
-for k, v in ipairs(langs_association) do
-    if inifile.lang.source == v then
-        combo_langs_sindex[0] = k-1
-    elseif inifile.lang.target == v then
-        combo_langs_tindex[0] = k-1
+
+local function updateComboIndices()
+    for k, v in ipairs(langs_association) do
+        if inifile.lang.source == v then
+            combo_langs_sindex[0] = k-1
+        elseif inifile.lang.target == v then
+            combo_langs_tindex[0] = k-1
+        end
     end
 end
+updateComboIndices()
+
 ---------------
 function main()
     if not isSampLoaded() or not isSampfuncsLoaded() then return end
@@ -132,6 +145,39 @@ function main()
     math.randomseed(os.time())
 
     local api_url = "http://127.0.0.1:9560" -- Local API
+
+    -- Watchdog thread to sync manual adjustments to config.ini automatically
+    lua_thread.create(function()
+        while true do
+            wait(1000) -- Check for manual edits every 1 second
+            local current_mod_time = get_file_mod_time(cpath)
+            if current_mod_time ~= last_config_mod_time then
+                last_config_mod_time = current_mod_time
+                local temp_ini = inicfg.load(defaultIni, cpath)
+                if temp_ini then
+                    inifile = temp_ini
+                    
+                    -- Update ImGui pointers so UI checkboxes sync up visually
+                    cb_enable_in[0] = inifile.translate.enable_in
+                    cb_enable_out[0] = inifile.translate.enable_out
+                    cb_chat[0] = inifile.options.t_chat
+                    cb_dialogs[0] = inifile.options.t_dialogs
+                    cb_chatbubbles[0] = inifile.options.t_chatbubbles
+                    cb_textlabels[0] = inifile.options.t_textlabels
+                    cb_autoupdate[0] = inifile.options.autoupdate
+                    
+                    for idx, name in ipairs(combo_scriptlangs_text) do
+                        if inifile.options.scriptlang == name then
+                            combo_scriptlangs_index[0] = idx - 1
+                            break
+                        end
+                    end
+                    updateComboIndices()
+                    updateScriptLang()
+                end
+            end
+        end
+    end)
 
     lua_thread.create(function()
         while true do
@@ -629,6 +675,7 @@ imguiFrame[1] = imgui.OnFrame(
         if imgui.Checkbox(u8(phrases.AU_STATUS), cb_autoupdate) then
             inifile.options.autoupdate = not inifile.options.autoupdate
             inicfg.save(inifile, cpath)
+            last_config_mod_time = get_file_mod_time(cpath) -- Avoid self-triggering updates
         end
         imguiHint(phrases.H_AUINFO)
         imgui.SameLine(280)
@@ -636,6 +683,7 @@ imguiFrame[1] = imgui.OnFrame(
         if imgui.Combo("##ScriptLang", combo_scriptlangs_index, combo_scriptlangs, #combo_scriptlangs_text) then
             inifile.options.scriptlang = combo_scriptlangs_text[combo_scriptlangs_index[0] + 1]
             inicfg.save(inifile, cpath)
+            last_config_mod_time = get_file_mod_time(cpath)
             updateScriptLang()
         end
         imgui.PopItemWidth()
@@ -644,12 +692,14 @@ imguiFrame[1] = imgui.OnFrame(
             inifile.translate.enable_out = not inifile.translate.enable_out
             if inifile.translate.enable_out then threads = {} end
             inicfg.save(inifile, cpath)
+            last_config_mod_time = get_file_mod_time(cpath)
         end
         imguiHint(phrases.H_TMO)
         if imgui.Checkbox(u8(phrases.TRANSLATE_MES_IN), cb_enable_in) then
             inifile.translate.enable_in = not inifile.translate.enable_in
             if inifile.translate.enable_in then threads = {} end
             inicfg.save(inifile, cpath)
+            last_config_mod_time = get_file_mod_time(cpath)
         end
         imguiHint(phrases.H_TMI)
         imgui.Separator()
@@ -662,6 +712,7 @@ imguiFrame[1] = imgui.OnFrame(
             inifile.lang.target = getLangFromComboIndex(combo_langs_tindex[0])
 
             inicfg.save(inifile, cpath)
+            last_config_mod_time = get_file_mod_time(cpath)
         end
         if imgui.Combo(u8(phrases.CB_TARGET), combo_langs_tindex, combo_langs, #combo_langs_text) then
             if combo_langs_sindex[0] == combo_langs_tindex[0] then
@@ -671,25 +722,30 @@ imguiFrame[1] = imgui.OnFrame(
             inifile.lang.target = getLangFromComboIndex(combo_langs_tindex[0])
 
             inicfg.save(inifile, cpath)
+            last_config_mod_time = get_file_mod_time(cpath)
         end
         imgui.Separator()
         if imgui.Checkbox(u8(phrases.T_CHAT), cb_chat) then
             inifile.options.t_chat = not inifile.options.t_chat
             inicfg.save(inifile, cpath)
+            last_config_mod_time = get_file_mod_time(cpath)
         end
         imgui.SameLine(224)
         if imgui.Checkbox(u8(phrases.T_DIALOGS), cb_dialogs) then
             inifile.options.t_dialogs = not inifile.options.t_dialogs
             inicfg.save(inifile, cpath)
+            last_config_mod_time = get_file_mod_time(cpath)
         end
         if imgui.Checkbox(u8(phrases.T_CHATBUBBLES), cb_chatbubbles) then
             inifile.options.t_chatbubbles = not inifile.options.t_chatbubbles
             inicfg.save(inifile, cpath)
+            last_config_mod_time = get_file_mod_time(cpath)
         end
         imgui.SameLine(224)
         if imgui.Checkbox(u8(phrases.T_TEXTLABELS), cb_textlabels) then
             inifile.options.t_textlabels = not inifile.options.t_textlabels
             inicfg.save(inifile, cpath)
+            last_config_mod_time = get_file_mod_time(cpath)
         end
         imgui.PopItemWidth()
         imgui.End()
